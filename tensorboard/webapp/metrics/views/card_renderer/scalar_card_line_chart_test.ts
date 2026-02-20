@@ -98,6 +98,12 @@ import {provideMockTbStore} from '../../../testing/utils';
       }"
     ></ng-container>
     <ng-container
+      *ngIf="customVisTemplate"
+      [ngTemplateOutlet]="customVisTemplate"
+      [ngTemplateOutletContext]="axisTemplateContext"
+    >
+    </ng-container>
+    <ng-container
       *ngIf="customChartOverlayTemplate"
       [ngTemplateOutlet]="customChartOverlayTemplate"
       [ngTemplateOutletContext]="axisTemplateContext"
@@ -121,11 +127,24 @@ class TestableLineChart {
 
   @Input()
   customChartOverlayTemplate!: TemplateRef<{}>;
+  @Input() customVisTemplate!: TemplateRef<{}>;
 
   axisTemplateContext = {
     viewExtent: {x: [0, 100], y: [0, 1000]},
     domDimension: {width: 200, height: 200},
     xScale: {
+      forward: (
+        domain: [number, number],
+        range: [number, number],
+        step: number
+      ) => step,
+      reverse: (
+        domain: [number, number],
+        range: [number, number],
+        axisPosition: number
+      ) => axisPosition,
+    },
+    yScale: {
       forward: (
         domain: [number, number],
         range: [number, number],
@@ -522,6 +541,93 @@ describe('scalar card line chart', () => {
         lineChartEl.componentInstance.seriesMetadataMap[id];
       expect(displayName).toBe('Run1 name');
       expect(visible).toBe(true);
+    }));
+
+    it('toggles line rider when pressing space bar', fakeAsync(() => {
+      const fixture = createComponent(
+        {
+          run1: buildOriginalSeriesMetadata({id: 'run1', visible: true}),
+        },
+        [
+          {
+            id: 'run1',
+            points: [
+              buildScalarCardPoint({x: 0, y: 0}),
+              buildScalarCardPoint({x: 100, y: 100}),
+            ],
+          },
+        ]
+      );
+      const scalarLineChart = fixture.debugElement.query(
+        By.directive(ScalarCardLineChartComponent)
+      );
+      expect(fixture.nativeElement.querySelector('.line-rider-sledge')).toBe(
+        null
+      );
+
+      window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Space'}));
+      fixture.detectChanges();
+      expect(
+        scalarLineChart.componentInstance.isLineRiderEnabled
+      ).toBeTruthy();
+      expect(fixture.nativeElement.querySelector('.line-rider-sledge')).not.toBe(
+        null
+      );
+
+      window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Space'}));
+      fixture.detectChanges();
+      expect(
+        scalarLineChart.componentInstance.isLineRiderEnabled
+      ).toBeFalsy();
+      expect(fixture.nativeElement.querySelector('.line-rider-sledge')).toBe(
+        null
+      );
+    }));
+
+    it('uses non-aux series for line rider to respect smoothing', fakeAsync(() => {
+      const fixture = createComponent(
+        {
+          run1: {
+            ...buildOriginalSeriesMetadata({id: 'run1', visible: true}),
+            aux: true,
+          },
+          smoothed1: {
+            ...buildOriginalSeriesMetadata({id: 'smoothed1', visible: true}),
+            aux: false,
+          },
+        },
+        [
+          {
+            id: 'run1',
+            points: [
+              buildScalarCardPoint({x: 0, y: 0}),
+              buildScalarCardPoint({x: 100, y: 100}),
+            ],
+          },
+          {
+            id: 'smoothed1',
+            points: [
+              buildScalarCardPoint({x: 0, y: 10}),
+              buildScalarCardPoint({x: 100, y: 20}),
+            ],
+          },
+        ]
+      );
+      const scalarLineChart = fixture.debugElement.query(
+        By.directive(ScalarCardLineChartComponent)
+      );
+
+      window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Space'}));
+      fixture.detectChanges();
+
+      expect(
+        scalarLineChart.componentInstance
+          .getLineRiderSeries()
+          .map((series: ScalarCardDataSeries) => series.id)
+      ).toEqual(['smoothed1']);
+
+      window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Space'}));
+      fixture.detectChanges();
     }));
 
     describe('custom x axis formatter', () => {

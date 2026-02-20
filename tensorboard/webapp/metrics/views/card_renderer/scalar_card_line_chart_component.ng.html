@@ -37,7 +37,19 @@ limitations under the License.
   let-viewExtent="viewExtent"
   let-domDim="domDimension"
   let-xScale="xScale"
+  let-yScale="yScale"
 >
+  <ng-container *ngIf="isLineRiderEnabled">
+    <ng-container *ngFor="let series of getLineRiderSeries()">
+      <span
+        *ngIf="getLineRiderPosition(series) as position"
+        class="line-rider-sledge"
+        [style.left]="xScale.forward(viewExtent.x, [0, domDim.width], position.x) + 'px'"
+        [style.top]="yScale.forward(viewExtent.y, [domDim.height, 0], position.y) + 'px'"
+        >🛷</span
+      >
+    </ng-container>
+  </ng-container>
   <ng-container *ngIf="stepOrLinkedTimeSelection">
     <div
       [ngClass]="{

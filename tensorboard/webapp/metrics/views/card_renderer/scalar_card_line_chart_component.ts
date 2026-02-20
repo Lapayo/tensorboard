@@ -16,9 +16,10 @@ import {
   ChangeDetectionStrategy,
   Component,
   ChangeDetectorRef,
-  ElementRef,
   EventEmitter,
+  HostListener,
   Input,
+  OnDestroy,
   Output,
   ViewChild,
 } from '@angular/core';
@@ -53,7 +54,7 @@ import {
   styleUrls: ['scalar_card_line_chart_component.css'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class ScalarCardLineChartComponent {
+export class ScalarCardLineChartComponent implements OnDestroy {
   readonly DataLoadState = DataLoadState;
   readonly RendererType = RendererType;
   readonly ScaleType = ScaleType;
@@ -91,6 +92,9 @@ export class ScalarCardLineChartComponent {
   constructor(private readonly changeDetector: ChangeDetectorRef) {}
 
   isViewBoxOverridden: boolean = false;
+  isLineRiderEnabled = false;
+  lineRiderProgress = 0;
+  private lineRiderIntervalId: ReturnType<typeof setInterval> | null = null;
 
   resetDomain() {
     if (this.lineChart) {
@@ -120,5 +124,75 @@ export class ScalarCardLineChartComponent {
 
   showFobController() {
     return this.xAxisType === XAxisType.STEP && this.minMaxStep;
+  }
+
+  @HostListener('window:keydown', ['$event'])
+  onWindowKeyDown(event: KeyboardEvent) {
+    if (event.code !== 'Space') {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    this.isLineRiderEnabled = !this.isLineRiderEnabled;
+    this.lineRiderProgress = 0;
+    if (this.isLineRiderEnabled) {
+      this.startLineRider();
+    } else {
+      this.stopLineRider();
+    }
+  }
+
+  getLineRiderSeries() {
+    const candidates = this.seriesData.filter((series) => {
+      const metadata = this.seriesMetadataMap[series.id];
+      return metadata?.aux !== true && metadata?.visible !== false;
+    });
+    return (candidates.length ? candidates : this.seriesData).filter(
+      (series) => series.points.length > 1
+    );
+  }
+
+  getLineRiderPosition(series: ScalarCardDataSeries) {
+    const maxIndex = series.points.length - 1;
+    const index = this.lineRiderProgress * maxIndex;
+    const lower = series.points[Math.floor(index)];
+    const upper = series.points[Math.ceil(index)];
+    if (!lower || !upper) {
+      return null;
+    }
+    const ratio = index % 1;
+    return {
+      x: lower.x + (upper.x - lower.x) * ratio,
+      y: lower.y + (upper.y - lower.y) * ratio,
+    };
+  }
+
+  private startLineRider() {
+    this.stopLineRider();
+    this.lineRiderIntervalId = setInterval(() => {
+      this.lineRiderProgress = (this.lineRiderProgress + 0.02) % 1;
+      this.changeDetector.markForCheck();
+    }, 80);
+  }
+
+  private stopLineRider() {
+    if (this.lineRiderIntervalId !== null) {
+      clearInterval(this.lineRiderIntervalId);
+      this.lineRiderIntervalId = null;
+    }
+  }
+
+  ngOnDestroy() {
+    this.stopLineRider();
   }
 }
