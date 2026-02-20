@@ -44,9 +44,11 @@ limitations under the License.
       <span
         *ngIf="getLineRiderPosition(series) as position"
         class="line-rider-sledge"
+        [class.crashed]="position.crashed"
         [style.left]="xScale.forward(viewExtent.x, [0, domDim.width], position.x) + 'px'"
         [style.top]="yScale.forward(viewExtent.y, [domDim.height, 0], position.y) + 'px'"
-        >🛷</span
+        [style.--line-rider-angle]="position.angle + 'deg'"
+        >{{ position.crashed ? '💥' : '🛷' }}</span
       >
     </ng-container>
   </ng-container>

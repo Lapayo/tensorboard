@@ -630,6 +630,92 @@ describe('scalar card line chart', () => {
       fixture.detectChanges();
     }));
 
+    it('accelerates downhill due to gravity', fakeAsync(() => {
+      const fixture = createComponent(
+        {
+          run1: buildOriginalSeriesMetadata({id: 'run1', visible: true}),
+        },
+        [
+          {
+            id: 'run1',
+            points: [
+              buildScalarCardPoint({x: 0, y: 3}),
+              buildScalarCardPoint({x: 1, y: 2}),
+              buildScalarCardPoint({x: 2, y: 0}),
+            ],
+          },
+        ]
+      );
+      const scalarLineChartComponent = fixture.debugElement.query(
+        By.directive(ScalarCardLineChartComponent)
+      ).componentInstance;
+
+      window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Space'}));
+      tick(80);
+      fixture.detectChanges();
+      const speedAfterFirstStep =
+        scalarLineChartComponent.getLineRiderStateForTest('run1')!.speed;
+
+      tick(400);
+      fixture.detectChanges();
+      const speedAfterMoreSteps =
+        scalarLineChartComponent.getLineRiderStateForTest('run1')!.speed;
+
+      expect(speedAfterMoreSteps).toBeGreaterThan(speedAfterFirstStep);
+
+      window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Space'}));
+      fixture.detectChanges();
+    }));
+
+    it('jumps at sharp drop and crashes on rough track', fakeAsync(() => {
+      const fixture = createComponent(
+        {
+          jumpy: buildOriginalSeriesMetadata({id: 'jumpy', visible: true}),
+          rough: buildOriginalSeriesMetadata({id: 'rough', visible: true}),
+        },
+        [
+          {
+            id: 'jumpy',
+            points: [
+              buildScalarCardPoint({x: 0, y: 0}),
+              buildScalarCardPoint({x: 1, y: 2}),
+              buildScalarCardPoint({x: 2, y: -2}),
+              buildScalarCardPoint({x: 3, y: -3}),
+            ],
+          },
+          {
+            id: 'rough',
+            points: [
+              buildScalarCardPoint({x: 0, y: 3}),
+              buildScalarCardPoint({x: 1, y: -2}),
+              buildScalarCardPoint({x: 2, y: 3}),
+            ],
+          },
+        ]
+      );
+      const scalarLineChartComponent = fixture.debugElement.query(
+        By.directive(ScalarCardLineChartComponent)
+      ).componentInstance;
+
+      window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Space'}));
+      tick(240);
+      fixture.detectChanges();
+
+      expect(
+        scalarLineChartComponent.getLineRiderStateForTest('jumpy')!.airborne
+      ).toBeTrue();
+      expect(
+        scalarLineChartComponent.getLineRiderStateForTest('rough')!.crashed
+      ).toBeTrue();
+
+      expect(
+        fixture.nativeElement.querySelector('.line-rider-sledge.crashed')
+      ).not.toBeNull();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Space'}));
+      fixture.detectChanges();
+    }));
+
     describe('custom x axis formatter', () => {
       it('uses SI unit formatter when xAxisType is STEP', fakeAsync(() => {
         store.overrideSelector(selectors.getMetricsXAxisType, XAxisType.STEP);

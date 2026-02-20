@@ -64,5 +64,9 @@ line-chart {
   font-size: 16px;
   pointer-events: none;
   position: absolute;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) rotate(var(--line-rider-angle, 0deg));
+
+  &.crashed {
+    font-size: 18px;
+  }
 }
