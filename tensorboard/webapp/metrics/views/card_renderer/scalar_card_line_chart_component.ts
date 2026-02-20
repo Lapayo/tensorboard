@@ -47,6 +47,9 @@ import {
   ScalarCardSeriesMetadataMap,
 } from './scalar_card_types';
 
+const LINE_RIDER_PROGRESS_INCREMENT = 0.02;
+const LINE_RIDER_ANIMATION_INTERVAL_MS = 80;
+
 @Component({
   standalone: false,
   selector: 'scalar-card-line-chart-component',
@@ -142,7 +145,6 @@ export class ScalarCardLineChartComponent implements OnDestroy {
       return;
     }
 
-    event.preventDefault();
     this.isLineRiderEnabled = !this.isLineRiderEnabled;
     this.lineRiderProgress = 0;
     if (this.isLineRiderEnabled) {
@@ -157,6 +159,8 @@ export class ScalarCardLineChartComponent implements OnDestroy {
       const metadata = this.seriesMetadataMap[series.id];
       return metadata?.aux !== true && metadata?.visible !== false;
     });
+    // Fallback to all series so the easter egg still works when metadata is
+    // unavailable or all series are auxiliary/hidden.
     return (candidates.length ? candidates : this.seriesData).filter(
       (series) => series.points.length > 1
     );
@@ -180,9 +184,10 @@ export class ScalarCardLineChartComponent implements OnDestroy {
   private startLineRider() {
     this.stopLineRider();
     this.lineRiderIntervalId = setInterval(() => {
-      this.lineRiderProgress = (this.lineRiderProgress + 0.02) % 1;
+      this.lineRiderProgress =
+        (this.lineRiderProgress + LINE_RIDER_PROGRESS_INCREMENT) % 1;
       this.changeDetector.markForCheck();
-    }, 80);
+    }, LINE_RIDER_ANIMATION_INTERVAL_MS);
   }
 
   private stopLineRider() {

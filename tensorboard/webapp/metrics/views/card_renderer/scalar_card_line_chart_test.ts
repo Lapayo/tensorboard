@@ -136,8 +136,8 @@ class TestableLineChart {
       forward: (
         domain: [number, number],
         range: [number, number],
-        step: number
-      ) => step,
+        domainValue: number
+      ) => domainValue,
       reverse: (
         domain: [number, number],
         range: [number, number],
@@ -148,8 +148,8 @@ class TestableLineChart {
       forward: (
         domain: [number, number],
         range: [number, number],
-        step: number
-      ) => step,
+        domainValue: number
+      ) => domainValue,
       reverse: (
         domain: [number, number],
         range: [number, number],
