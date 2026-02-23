@@ -44,6 +44,51 @@ import './panZoomDragLayer.html';
 const valueFormatter = multiscaleFormatter(Y_TOOLTIP_FORMATTER_PRECISION);
 
 const formatValueOrNaN = (x) => (isNaN(x) ? 'NaN' : valueFormatter(x));
+const LINE_RIDER_ANIMATION_INTERVAL_MS = 80;
+const LINE_RIDER_GRAVITY = 120;
+const LINE_RIDER_FRICTION = 8;
+const LINE_RIDER_MIN_SPEED = 15;
+const LINE_RIDER_INITIAL_SPEED = 35;
+const LINE_RIDER_ROUGH_ANGLE_THRESHOLD_RAD = 1.4;
+const LINE_RIDER_CRASH_SPEED_THRESHOLD = 40;
+const LINE_RIDER_JUMP_SPEED_THRESHOLD = 30;
+const LINE_RIDER_JUMP_DROP_DELTA_RAD = 0.5;
+const LINE_RIDER_MAX_FALL_DISTANCE = 140;
+const LINE_RIDER_MIN_X_DELTA = 1e-4;
+const LINE_RIDER_MIN_VX_FOR_ANGLE = 0.1;
+const LINE_RIDER_DEFAULT_DISTANCE = 1;
+const LINE_RIDER_LANDING_SPEED_MULTIPLIER = 0.8;
+const MILLIS_PER_HOUR = 60 * 60 * 1000;
+const RAD_TO_DEG = 180 / Math.PI;
+
+type LineRiderPoint = {
+  x: number;
+  y: number;
+};
+
+type LineRiderTrack = {
+  id: string;
+  points: LineRiderPoint[];
+  minY: number;
+  maxY: number;
+};
+
+type LineRiderScales = {
+  xScale: {scale: (value: number | Date) => number};
+  yScale: {scale: (value: number) => number};
+};
+
+type LineRiderState = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  speed: number;
+  segmentIndex: number;
+  segmentT: number;
+  airborne: boolean;
+  crashed: boolean;
+};
 
 export const DEFAULT_TOOLTIP_COLUMNS = [
   {
@@ -84,6 +129,7 @@ class VzLineChart2<SeriesMetadata = {}> extends LegacyElementMixin(
 ) {
   static readonly template = html`
     <div id="chartdiv"></div>
+    <div id="line-rider-layer"></div>
     <vz-chart-tooltip
       id="tooltip"
       position="[[tooltipPosition]]"
@@ -127,6 +173,21 @@ class VzLineChart2<SeriesMetadata = {}> extends LegacyElementMixin(
 
       #chartdiv {
         contain: strict;
+      }
+
+      #line-rider-layer {
+        inset: 0;
+        pointer-events: none;
+        position: absolute;
+      }
+
+      .line-rider {
+        font-size: 16px;
+        left: 0;
+        position: absolute;
+        top: 0;
+        transform: translate(-50%, -50%);
+        will-change: transform, left, top;
       }
 
       #chartdiv line.guide-line {
@@ -318,8 +379,14 @@ class VzLineChart2<SeriesMetadata = {}> extends LegacyElementMixin(
   @property({type: Object})
   private _seriesMetadataCache: Record<string, any> = {};
 
+  @property({type: Boolean})
+  private _lineRiderEnabled: boolean = false;
+
   @property({type: Number})
   private _makeChartAsyncCallbackId: number | null = null;
+
+  private _lineRiderIntervalId: number | null = null;
+  private _lineRiderStates = new Map<string, LineRiderState>();
 
   ready() {
     super.ready();
@@ -353,6 +420,9 @@ class VzLineChart2<SeriesMetadata = {}> extends LegacyElementMixin(
       });
       this._listeners.clear();
     }
+    this._stopLineRider();
+    this._lineRiderStates.clear();
+    this._clearLineRiders();
   }
   _listen(
     node: Node | Window,
@@ -365,6 +435,20 @@ class VzLineChart2<SeriesMetadata = {}> extends LegacyElementMixin(
     node.addEventListener(eventName, func, option);
   }
   _onKeyDown(event) {
+    if (event.code === 'Space' && !event.repeat) {
+      const target = event.target as HTMLElement | null;
+      if (
+        !target ||
+        !(
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable
+        )
+      ) {
+        this._toggleLineRider();
+      }
+    }
     this.toggleClass('pankey', PanZoomDragLayer.isPanKey(event));
   }
   _onKeyUp(event) {
@@ -445,6 +529,9 @@ class VzLineChart2<SeriesMetadata = {}> extends LegacyElementMixin(
   redraw() {
     if (this._chart) {
       this._chart.redraw();
+      if (this._lineRiderEnabled) {
+        this._renderLineRiders();
+      }
     }
   }
   @observe(
@@ -517,6 +604,9 @@ class VzLineChart2<SeriesMetadata = {}> extends LegacyElementMixin(
       });
     this._chart.setVisibleSeries(this._visibleSeriesCache);
     this._chart.commitChanges();
+    if (this._lineRiderEnabled) {
+      this._renderLineRiders();
+    }
   }
   @observe('smoothingEnabled', 'smoothingWeight', '_chart')
   _smoothingChanged() {
@@ -550,6 +640,355 @@ class VzLineChart2<SeriesMetadata = {}> extends LegacyElementMixin(
   }
   getExporter() {
     return new LineChartExporter(this.$.chartdiv);
+  }
+
+  private _toggleLineRider() {
+    this._lineRiderEnabled = !this._lineRiderEnabled;
+    this._lineRiderStates.clear();
+    if (!this._lineRiderEnabled) {
+      this._stopLineRider();
+      this._clearLineRiders();
+      return;
+    }
+    this._startLineRider();
+  }
+
+  private _startLineRider() {
+    this._stopLineRider();
+    this._lineRiderIntervalId = window.setInterval(() => {
+      this._stepLineRiders();
+      this._renderLineRiders();
+    }, LINE_RIDER_ANIMATION_INTERVAL_MS);
+  }
+
+  private _stopLineRider() {
+    if (this._lineRiderIntervalId !== null) {
+      window.clearInterval(this._lineRiderIntervalId);
+      this._lineRiderIntervalId = null;
+    }
+  }
+
+  private _clearLineRiders() {
+    const layer = this.$['line-rider-layer'] as HTMLElement | undefined;
+    if (layer) {
+      layer.textContent = '';
+    }
+  }
+
+  private _stepLineRiders() {
+    if (!this._chart) {
+      return;
+    }
+    const tracks = this._getLineRiderTracks();
+    const trackIds = new Set(tracks.map((track) => track.id));
+    for (const id of this._lineRiderStates.keys()) {
+      if (!trackIds.has(id)) {
+        this._lineRiderStates.delete(id);
+      }
+    }
+    for (const track of tracks) {
+      const state = this._getOrCreateLineRiderState(track.id, track.points);
+      if (!state) {
+        continue;
+      }
+      this._advanceLineRiderState(state, track);
+    }
+  }
+
+  private _renderLineRiders() {
+    if (!this._lineRiderEnabled || !this._chart) {
+      return;
+    }
+    const layer = this.$['line-rider-layer'] as HTMLElement | undefined;
+    if (!layer) {
+      return;
+    }
+    const states = this._lineRiderStates;
+    const tracks = this._getLineRiderTracks();
+    const trackIds = new Set(tracks.map((track) => track.id));
+    layer.textContent = '';
+    for (const id of trackIds) {
+      const state = states.get(id);
+      if (!state) {
+        continue;
+      }
+      const rider = document.createElement('span');
+      rider.className = 'line-rider';
+      rider.textContent = state.crashed ? '💥' : '🛷';
+      rider.setAttribute(
+        'aria-label',
+        state.crashed ? 'Line rider crashed' : 'Line rider active'
+      );
+      rider.style.left = `${state.x}px`;
+      rider.style.top = `${state.y}px`;
+      rider.style.transform = `translate(-50%, -50%) rotate(${
+        this._getLineRiderAngle(state.vx, state.vy) * RAD_TO_DEG
+      }deg)`;
+      layer.appendChild(rider);
+    }
+  }
+
+  private _getLineRiderTracks(): LineRiderTrack[] {
+    if (!this._chart) {
+      return [];
+    }
+    const {xScale, yScale} = this._chart as unknown as LineRiderScales;
+    if (!xScale || !yScale) {
+      return [];
+    }
+    return this._visibleSeriesCache
+      .map((id) => {
+        const data = this._seriesDataCache[id] as ScalarDatum[] | undefined;
+        if (!data?.length) {
+          return null;
+        }
+        const firstWallTime = +data[0].wall_time;
+        const points = data
+          .map((datum) => {
+            const xValue = this._getLineRiderXValue(datum, firstWallTime);
+            const yValue = this._getLineRiderYValue(datum);
+            const x = xScale.scale(xValue);
+            const y = yScale.scale(yValue);
+            if (!isFinite(x) || !isFinite(y)) {
+              return null;
+            }
+            return {x, y} as LineRiderPoint;
+          })
+          .filter((point): point is LineRiderPoint => !!point);
+        if (points.length <= 1) {
+          return null;
+        }
+        const {minY, maxY} = points.reduce(
+          (acc, point) => ({
+            minY: Math.min(acc.minY, point.y),
+            maxY: Math.max(acc.maxY, point.y),
+          }),
+          {minY: Number.POSITIVE_INFINITY, maxY: Number.NEGATIVE_INFINITY}
+        );
+        return {id, points, minY, maxY};
+      })
+      .filter((item): item is LineRiderTrack => !!item);
+  }
+
+  private _getLineRiderXValue(datum: ScalarDatum, firstWallTime: number) {
+    if (this.xType === XType.WALL_TIME) {
+      return datum.wall_time;
+    }
+    if (this.xType === XType.RELATIVE) {
+      return (+datum.wall_time - firstWallTime) / MILLIS_PER_HOUR;
+    }
+    return datum.step;
+  }
+
+  private _getLineRiderYValue(datum: ScalarDatum) {
+    if (this.smoothingEnabled && isFinite(datum.smoothed)) {
+      return datum.smoothed;
+    }
+    return datum.scalar;
+  }
+
+  private _getOrCreateLineRiderState(id: string, points: LineRiderPoint[]) {
+    if (points.length < 2) {
+      return null;
+    }
+    const existing = this._lineRiderStates.get(id);
+    if (existing) {
+      return existing;
+    }
+    const [first, second] = points;
+    const dx = second.x - first.x;
+    const dy = second.y - first.y;
+    const rawDistance = Math.hypot(dx, dy);
+    // Degenerate segment (identical adjacent points): use a non-zero fallback
+    // to avoid division by zero when initializing velocity.
+    const distance =
+      rawDistance === 0 ? LINE_RIDER_DEFAULT_DISTANCE : rawDistance;
+    const speed = LINE_RIDER_INITIAL_SPEED;
+    const state: LineRiderState = {
+      x: first.x,
+      y: first.y,
+      vx: (dx / distance) * speed,
+      vy: (dy / distance) * speed,
+      speed,
+      segmentIndex: 0,
+      segmentT: 0,
+      airborne: false,
+      crashed: false,
+    };
+    this._lineRiderStates.set(id, state);
+    return state;
+  }
+
+  private _advanceLineRiderState(state: LineRiderState, track: LineRiderTrack) {
+    const points = track.points;
+    if (state.crashed || points.length < 2) {
+      return;
+    }
+    const dt = LINE_RIDER_ANIMATION_INTERVAL_MS / 1000;
+    if (state.airborne) {
+      this._advanceAirborneLineRiderState(state, track, dt);
+      return;
+    }
+    let remainingDistance = Math.max(state.speed, LINE_RIDER_MIN_SPEED) * dt;
+    while (remainingDistance > 0 && !state.airborne && !state.crashed) {
+      if (state.segmentIndex >= points.length - 1) {
+        state.segmentIndex = 0;
+        state.segmentT = 0;
+        state.x = points[0].x;
+        state.y = points[0].y;
+      }
+      const start = points[state.segmentIndex];
+      const end = points[state.segmentIndex + 1];
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const length = Math.hypot(dx, dy);
+      if (!length) {
+        state.segmentIndex += 1;
+        continue;
+      }
+      const tangentX = dx / length;
+      const tangentY = dy / length;
+      const gravityAlongTrack = LINE_RIDER_GRAVITY * tangentY;
+      state.speed = Math.max(
+        LINE_RIDER_MIN_SPEED,
+        state.speed + (gravityAlongTrack - LINE_RIDER_FRICTION) * dt
+      );
+      state.vx = tangentX * state.speed;
+      state.vy = tangentY * state.speed;
+
+      const segmentRemaining = length * (1 - state.segmentT);
+      const travel = Math.min(remainingDistance, segmentRemaining);
+      state.segmentT += travel / length;
+      state.x = start.x + dx * state.segmentT;
+      state.y = start.y + dy * state.segmentT;
+      remainingDistance -= travel;
+
+      if (state.segmentT < 1) {
+        continue;
+      }
+      const currentAngle = Math.atan2(dy, dx);
+      const next = this._getLineRiderSegment(points, state.segmentIndex + 1);
+      if (next) {
+        const nextAngle = Math.atan2(next.dy, next.dx);
+        const angleDelta = Math.abs(nextAngle - currentAngle);
+        if (
+          angleDelta > LINE_RIDER_ROUGH_ANGLE_THRESHOLD_RAD &&
+          state.speed > LINE_RIDER_CRASH_SPEED_THRESHOLD
+        ) {
+          state.crashed = true;
+          state.x = end.x;
+          state.y = end.y;
+          return;
+        }
+        if (
+          currentAngle > 0 &&
+          nextAngle < currentAngle - LINE_RIDER_JUMP_DROP_DELTA_RAD &&
+          state.speed > LINE_RIDER_JUMP_SPEED_THRESHOLD
+        ) {
+          state.airborne = true;
+          state.x = end.x;
+          state.y = end.y;
+          state.vx = Math.cos(currentAngle) * state.speed;
+          state.vy = Math.sin(currentAngle) * state.speed;
+          state.segmentIndex += 1;
+          state.segmentT = 0;
+          return;
+        }
+      }
+      state.segmentIndex += 1;
+      state.segmentT = 0;
+    }
+  }
+
+  private _advanceAirborneLineRiderState(
+    state: LineRiderState,
+    track: LineRiderTrack,
+    dt: number
+  ) {
+    const {points, minY, maxY} = track;
+    state.vy += LINE_RIDER_GRAVITY * dt;
+    state.x += state.vx * dt;
+    state.y += state.vy * dt;
+    if (state.y > maxY + LINE_RIDER_MAX_FALL_DISTANCE) {
+      state.crashed = true;
+      state.airborne = false;
+      return;
+    }
+    if (state.y < minY - LINE_RIDER_MAX_FALL_DISTANCE) {
+      state.crashed = true;
+      state.airborne = false;
+      return;
+    }
+
+    const landing = this._getLineRiderTrackPointAtX(points, state.x);
+    if (!landing) {
+      return;
+    }
+    if (state.y < landing.y) {
+      return;
+    }
+    state.airborne = false;
+    state.segmentIndex = landing.segmentIndex;
+    state.segmentT = landing.t;
+    state.x = landing.x;
+    state.y = landing.y;
+
+    const landingAngle = Math.atan2(landing.dy, landing.dx);
+    if (
+      Math.abs(this._getLineRiderAngle(state.vx, state.vy) - landingAngle) >
+        LINE_RIDER_ROUGH_ANGLE_THRESHOLD_RAD &&
+      Math.abs(state.vy) > LINE_RIDER_CRASH_SPEED_THRESHOLD
+    ) {
+      state.crashed = true;
+      return;
+    }
+    const speed = Math.hypot(state.vx, state.vy);
+    state.speed = Math.max(
+      LINE_RIDER_MIN_SPEED,
+      speed * LINE_RIDER_LANDING_SPEED_MULTIPLIER
+    );
+    state.vx = Math.cos(landingAngle) * state.speed;
+    state.vy = Math.sin(landingAngle) * state.speed;
+  }
+
+  private _getLineRiderSegment(points: LineRiderPoint[], index: number) {
+    if (index < 0 || index >= points.length - 1) {
+      return null;
+    }
+    const start = points[index];
+    const end = points[index + 1];
+    return {dx: end.x - start.x, dy: end.y - start.y};
+  }
+
+  private _getLineRiderTrackPointAtX(points: LineRiderPoint[], x: number) {
+    for (let i = 0; i < points.length - 1; i++) {
+      const start = points[i];
+      const end = points[i + 1];
+      const minX = Math.min(start.x, end.x);
+      const maxX = Math.max(start.x, end.x);
+      if (x < minX || x > maxX) {
+        continue;
+      }
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      // For near-vertical segments, use midpoint interpolation as a stable
+      // fallback because solving for t from x is numerically unstable.
+      const t =
+        Math.abs(dx) < LINE_RIDER_MIN_X_DELTA ? 0.5 : (x - start.x) / dx;
+      return {
+        x,
+        y: start.y + dy * t,
+        segmentIndex: i,
+        t,
+        dx,
+        dy,
+      };
+    }
+    return null;
+  }
+
+  private _getLineRiderAngle(vx: number, vy: number) {
+    return Math.atan2(vy, Math.max(vx, LINE_RIDER_MIN_VX_FOR_ANGLE));
   }
 }
 
