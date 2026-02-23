@@ -25,6 +25,7 @@ import {
   Point,
   relativeAccessor,
   relativeFormatter,
+  ScalarDatum,
   stepFormatter,
   stepX,
   SymbolFn,
